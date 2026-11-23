@@ -13,7 +13,97 @@ from google.genai import types
 from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------------------------
-# 1. Pydantic Schema for Texas Oil & Gas Instruments
+# 1. Page Config & High-End Custom Styling
+# ---------------------------------------------------------------------------
+st.set_page_config(
+    page_title="Texas O&G Landman Workbench | Black Mineral Consulting",
+    page_icon="🛢️",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+st.markdown(
+    """
+    <style>
+    /* Clean header & subtle top gradient accent */
+    .block-container {
+        padding-top: 2rem;
+        padding-bottom: 3rem;
+        max-width: 1400px;
+    }
+    .hero-banner {
+        background: linear-gradient(135deg, #131C31 0%, #1E293B 60%, #291D0E 100%);
+        border: 1px solid rgba(217, 119, 6, 0.35);
+        border-radius: 14px;
+        padding: 1.5rem 2rem;
+        margin-bottom: 1.25rem;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    }
+    .hero-title {
+        font-size: 2rem;
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        color: #F8FAFC;
+        margin: 0;
+    }
+    .hero-subtitle {
+        font-size: 0.98rem;
+        color: #CBD5E1;
+        margin-top: 0.35rem;
+        margin-bottom: 0;
+    }
+    .hero-badge {
+        display: inline-block;
+        background: rgba(217, 119, 6, 0.18);
+        color: #FBBF24;
+        border: 1px solid rgba(217, 119, 6, 0.45);
+        font-size: 0.75rem;
+        font-weight: 600;
+        padding: 0.2rem 0.65rem;
+        border-radius: 999px;
+        margin-bottom: 0.6rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+    }
+    /* Styled Tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+        background-color: #131C31;
+        padding: 6px;
+        border-radius: 10px;
+        border: 1px solid #1E293B;
+    }
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 8px;
+        padding: 8px 16px;
+        font-weight: 600;
+        color: #94A3B8;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #D97706 !important;
+        color: #FFFFFF !important;
+    }
+    /* Metric cards */
+    div[data-testid="stMetric"] {
+        background-color: #131C31;
+        border: 1px solid #1E293B;
+        padding: 0.9rem 1.1rem;
+        border-radius: 10px;
+    }
+    /* Primary Buttons */
+    .stButton > button[kind="primary"] {
+        border-radius: 8px;
+        font-weight: 600;
+        letter-spacing: 0.01em;
+        box-shadow: 0 4px 12px rgba(217, 119, 6, 0.25);
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# ---------------------------------------------------------------------------
+# 2. Pydantic Schema for Texas Oil & Gas Instruments
 # ---------------------------------------------------------------------------
 class Party(BaseModel):
     name: str = Field(..., description="Exact party name as written in the instrument")
@@ -88,7 +178,7 @@ Extract only what is supported by the provided document pages. Never guess or in
 
 
 # ---------------------------------------------------------------------------
-# 2. Geospatial, Title Math & Helper Functions
+# 3. Geospatial, Title Math & Helper Functions
 # ---------------------------------------------------------------------------
 def extract_zip_recursive(zip_bytes: bytes, dest_dir: str):
     """Unpacks a zip file and any inner .zip files (common in RRC bulk downloads)."""
@@ -252,14 +342,12 @@ def extract_instrument_with_gemini(
 
 
 # ---------------------------------------------------------------------------
-# 3. Streamlit UI Layout
+# 4. Session State Initialization
 # ---------------------------------------------------------------------------
-st.set_page_config(page_title="Texas O&G Landman Workbench", layout="wide")
-st.title("Texas Oil & Gas Landman Workbench")
-st.caption("Multi-County Spatial Crosswalk • Vision-LLM Lease Extractor • Custom Run Sheets • NMA/NRI Math")
-
 if "crosswalk_df" not in st.session_state:
     st.session_state.crosswalk_df = None
+if "layers_joined_count" not in st.session_state:
+    st.session_state.layers_joined_count = 0
 if "extracted_instruments" not in st.session_state:
     st.session_state.extracted_instruments = []
 if "doi_owners" not in st.session_state:
@@ -267,152 +355,232 @@ if "doi_owners" not in st.session_state:
         {"Owner Name": "Example Mineral Owner", "Mineral Fraction": "1/4", "Leased": True, "Lease Royalty": "1/5"}
     ]
 
-# Sidebar Configuration
+# ---------------------------------------------------------------------------
+# 5. Sidebar Configuration
+# ---------------------------------------------------------------------------
 with st.sidebar:
-    st.header("Configuration")
+    st.markdown("### ⚙️ Workbench Settings")
     api_key = st.text_input(
         "Gemini API Key",
         value=os.environ.get("GEMINI_API_KEY", ""),
         type="password",
-        help="Required for Vision-LLM deed & lease extraction.",
+        placeholder="Paste AIza... key here",
+        help="Required for AI Deed & Lease extraction in Tab 2.",
     )
+    if api_key:
+        st.success("AI Extraction Engine Ready", icon="✅")
+    else:
+        st.info("Add API key above to unlock Tab 2 AI extraction.", icon="🔑")
+
     model_choice = st.selectbox(
-        "Extraction Model",
+        "Document Vision Model",
         options=["gemini-2.5-flash", "gemini-2.5-pro"],
         index=0,
-        help="Use 2.5-pro for faint handwriting or complex metes-and-bounds.",
+        format_func=lambda m: "Gemini 2.5 Flash (Fast • Free Tier)" if "flash" in m else "Gemini 2.5 Pro (Complex Cursive/Deeds)",
     )
-    st.divider()
-    st.subheader("CRS Defaults")
-    fallback_crs = st.text_input("Fallback CRS (if .prj missing)", value="EPSG:4267")
-    target_crs = st.text_input("Target Planar CRS", value="EPSG:3083")
-    st.divider()
-    st.subheader("Quick External Portals")
-    st.markdown("- [RRC Public GIS Viewer](https://gis.rrc.texas.gov/GISViewer/)")
-    st.markdown("- [RRC Bulk Data Downloads](https://www.rrc.texas.gov/resource-center/research/data-sets-available-for-download/)")
-    st.markdown("- [TexasFile County Search](https://www.texasfile.com/)")
 
+    with st.expander("Advanced GIS Projections", expanded=False):
+        fallback_crs = st.text_input("Default Legacy Datum", value="EPSG:4267", help="NAD27 standard for Texas RRC files")
+        target_crs = st.text_input("Planar Join Projection", value="EPSG:3083", help="Texas Centric Albers Equal Area")
+
+    st.divider()
+    st.markdown("### 🧭 Texas Research Portals")
+    st.markdown("- [RRC Public GIS Viewer](https://gis.rrc.texas.gov/GISViewer/)")
+    st.markdown("- [RRC Shapefile & Data Downloads](https://www.rrc.texas.gov/resource-center/research/data-sets-available-for-download/)")
+    st.markdown("- [TexasFile County Clerk Search](https://www.texasfile.com/)")
+    st.markdown("- [Texas GLO Land Grant Search](https://s3.glo.texas.gov/ncu/SCANDOCS/archives_webfiles/arcmaps/webfiles/landgrants/LandGrantsWorklist.html)")
+
+# ---------------------------------------------------------------------------
+# 6. Hero Header & Live Status Strip
+# ---------------------------------------------------------------------------
+st.markdown(
+    """
+    <div class="hero-banner">
+        <div class="hero-badge">Texas Mineral &amp; Title Intelligence Suite</div>
+        <h1 class="hero-title">Texas Oil &amp; Gas Landman Workbench</h1>
+        <p class="hero-subtitle">Spatial Well-to-Survey Crosswalks • AI Deed &amp; Lease Extraction • Custom Run Sheets • Division of Interest Math</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+# Live Progress KPI Strip
+kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+well_count = len(st.session_state.crosswalk_df) if st.session_state.crosswalk_df is not None else 0
+inst_count = len(st.session_state.extracted_instruments)
+kpi1.metric("Crosswalk Well Records", f"{well_count:,}")
+kpi2.metric("County Layers Joined", str(st.session_state.layers_joined_count))
+kpi3.metric("Instruments Parsed", str(inst_count))
+kpi4.metric("AI Vision Status", "Connected" if api_key else "Standby")
+
+st.write("")
+
+# ---------------------------------------------------------------------------
+# 7. Main Navigation Tabs
+# ---------------------------------------------------------------------------
 tab_spatial, tab_extract, tab_crossref, tab_lookup, tab_math = st.tabs(
     [
-        "1. Multi-County Spatial Join",
-        "2. Lease / Deed Extractor",
-        "3. Custom Run Sheet & Audit",
-        "4. API & TexasFile Lookup",
-        "5. NMA / NRI Calculator",
+        "🗺️ 1. Spatial Crosswalk",
+        "📄 2. AI Deed & Lease Extractor",
+        "📋 3. Run Sheet & Audit",
+        "🔍 4. API & TexasFile Lookup",
+        "🧮 5. NMA / NRI Calculator",
     ]
 )
 
 # --- TAB 1: Multi-County Spatial-to-Survey Join ---
 with tab_spatial:
-    st.subheader("Map RRC Well Layers to Texas Legal Surveys (Single or Multi-County Batch)")
-    st.markdown(
-        "Upload zipped ESRI shapefiles (`.zip` containing one or multiple county `.shp` layers) or `.geojson` files."
-    )
+    with st.container(border=True):
+        st.markdown("#### Step 1: Upload RRC Well & Texas Survey Shapefiles")
+        st.caption("Keep RRC downloads as `.zip` archives — the workbench automatically unpacks nested county folders.")
 
-    col1, col2 = st.columns(2)
-    wells_selected_shps = []
-    surveys_selected_shps = []
+        col1, col2 = st.columns(2, gap="large")
+        wells_selected_shps = []
+        surveys_selected_shps = []
 
-    with col1:
-        wells_file = st.file_uploader("RRC Wells Layer(s) (.zip or .geojson)", type=["zip", "geojson"])
-        if wells_file is not None:
-            shp_list, exts = inspect_uploaded_archive(wells_file.name, wells_file.getvalue())
-            if len(shp_list) > 1:
-                join_all_wells = st.checkbox(
-                    f"Batch-select all {len(shp_list)} well layers in archive", value=False, key="all_w"
-                )
-                if join_all_wells:
+        with col1:
+            wells_file = st.file_uploader(
+                "RRC Wells Archive (.zip or .geojson)",
+                type=["zip", "geojson"],
+                help="Upload the RRC Well Layers by County zip file.",
+            )
+            if wells_file is not None:
+                shp_list, exts = inspect_uploaded_archive(wells_file.name, wells_file.getvalue())
+                if len(shp_list) > 1:
+                    join_all_wells = st.checkbox(
+                        f"Select all {len(shp_list)} well layers in archive", value=False, key="all_w"
+                    )
+                    if join_all_wells:
+                        wells_selected_shps = shp_list
+                    else:
+                        default_w = [s for s in shp_list if s.lower().endswith("b.shp")][:1] or [shp_list[0]]
+                        wells_selected_shps = st.multiselect(
+                            "Choose county well layer(s) (`b.shp` = bottomhole, `s.shp` = surface):",
+                            options=shp_list,
+                            default=default_w,
+                        )
+                elif len(shp_list) == 1:
                     wells_selected_shps = shp_list
+                    st.success(f"Ready: `{shp_list[0]}`")
                 else:
-                    default_w = [s for s in shp_list if s.lower().endswith("b.shp")][:1] or [shp_list[0]]
-                    wells_selected_shps = st.multiselect(
-                        "Select one or more Wells layers (e.g., surface 's.shp' or bottomhole 'b.shp'):",
-                        options=shp_list,
-                        default=default_w,
-                    )
-            elif len(shp_list) == 1:
-                wells_selected_shps = shp_list
-                st.success(f"Detected layer: `{shp_list[0]}`")
-            else:
-                st.error(f"No `.shp` file found inside `{wells_file.name}` (found: {', '.join(exts)}).")
+                    st.error(f"No `.shp` shapefile found in `{wells_file.name}` (found: {', '.join(exts)}).")
 
-    with col2:
-        surveys_file = st.file_uploader("Texas GLO / RRC Survey Layer(s) (.zip or .geojson)", type=["zip", "geojson"])
-        if surveys_file is not None:
-            shp_list_s, exts_s = inspect_uploaded_archive(surveys_file.name, surveys_file.getvalue())
-            if len(shp_list_s) > 1:
-                poly_layers = [s for s in shp_list_s if s.lower().endswith("p.shp")]
-                join_all_polys = st.checkbox(
-                    f"Batch-select all {len(poly_layers) or len(shp_list_s)} survey polygon layers",
-                    value=False,
-                    key="all_s",
-                )
-                if join_all_polys:
-                    surveys_selected_shps = poly_layers or shp_list_s
+        with col2:
+            surveys_file = st.file_uploader(
+                "Texas Survey Archive (.zip or .geojson)",
+                type=["zip", "geojson"],
+                help="Upload the RRC or Texas GLO Survey Layers zip file.",
+            )
+            if surveys_file is not None:
+                shp_list_s, exts_s = inspect_uploaded_archive(surveys_file.name, surveys_file.getvalue())
+                if len(shp_list_s) > 1:
+                    poly_layers = [s for s in shp_list_s if s.lower().endswith("p.shp")]
+                    join_all_polys = st.checkbox(
+                        f"Select all {len(poly_layers) or len(shp_list_s)} survey polygon layers",
+                        value=False,
+                        key="all_s",
+                    )
+                    if join_all_polys:
+                        surveys_selected_shps = poly_layers or shp_list_s
+                    else:
+                        default_s = poly_layers[:1] or [shp_list_s[0]]
+                        surveys_selected_shps = st.multiselect(
+                            "Choose survey polygon layer(s) (usually ends in `p.shp`):",
+                            options=shp_list_s,
+                            default=default_s,
+                        )
+                elif len(shp_list_s) == 1:
+                    surveys_selected_shps = shp_list_s
+                    st.success(f"Ready: `{shp_list_s[0]}`")
                 else:
-                    default_s = poly_layers[:1] or [shp_list_s[0]]
-                    surveys_selected_shps = st.multiselect(
-                        "Select one or more Survey polygon layers (usually ends in 'p.shp'):",
-                        options=shp_list_s,
-                        default=default_s,
-                    )
-            elif len(shp_list_s) == 1:
-                surveys_selected_shps = shp_list_s
-                st.success(f"Detected layer: `{shp_list_s[0]}`")
-            else:
-                st.error(f"No `.shp` file found inside `{surveys_file.name}` (found: {', '.join(exts_s)}).")
+                    st.error(f"No `.shp` shapefile found in `{surveys_file.name}` (found: {', '.join(exts_s)}).")
 
-    if st.button("Run Spatial Join", type="primary"):
-        if wells_file is None or surveys_file is None:
-            st.warning("Please upload both a Wells layer and a Survey layer first.")
-        else:
-            with st.spinner("Unpacking layers, aligning CRS across selected counties, and running spatial join..."):
-                try:
-                    wells_gdf = load_batch_geodata_from_upload(
-                        wells_file, wells_selected_shps, fallback_crs, target_crs
-                    )
-                    surveys_gdf = load_batch_geodata_from_upload(
-                        surveys_file, surveys_selected_shps, fallback_crs, target_crs
-                    )
-                    crosswalk_df = run_batch_spatial_join(wells_gdf, surveys_gdf)
-                    st.session_state.crosswalk_df = crosswalk_df
-                    st.success(
-                        f"Matched {len(crosswalk_df):,} well-to-survey records across "
-                        f"{len(wells_selected_shps) or 1} well layer(s) and {len(surveys_selected_shps) or 1} survey layer(s)."
-                    )
-                except Exception as exc:
-                    st.error(f"Spatial join failed: {exc}")
+        st.write("")
+        btn_col, _ = st.columns([1, 2])
+        with btn_col:
+            run_join_clicked = st.button("⚡ Run Spatial Join", type="primary", use_container_width=True)
+
+        if run_join_clicked:
+            if wells_file is None or surveys_file is None:
+                st.warning("Upload both a Wells archive and a Survey archive above before running the join.")
+            else:
+                with st.spinner("Aligning NAD27/NAD83 coordinates and intersecting wells against survey polygons..."):
+                    try:
+                        wells_gdf = load_batch_geodata_from_upload(
+                            wells_file, wells_selected_shps, fallback_crs, target_crs
+                        )
+                        surveys_gdf = load_batch_geodata_from_upload(
+                            surveys_file, surveys_selected_shps, fallback_crs, target_crs
+                        )
+                        crosswalk_df = run_batch_spatial_join(wells_gdf, surveys_gdf)
+                        st.session_state.crosswalk_df = crosswalk_df
+                        st.session_state.layers_joined_count = max(
+                            len(wells_selected_shps), len(surveys_selected_shps), 1
+                        )
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Spatial join error: {exc}")
 
     if st.session_state.crosswalk_df is not None:
         df = st.session_state.crosswalk_df
-        st.dataframe(df.head(500), use_container_width=True)
-        if len(df) > 500:
-            st.caption(f"Showing first 500 of {len(df):,} rows in browser. Download the CSV below for the full dataset.")
-        csv_data = df.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            label="Download Full Crosswalk CSV",
-            data=csv_data,
-            file_name="well_to_survey_crosswalk.csv",
-            mime="text/csv",
-        )
+        with st.container(border=True):
+            st.markdown("#### Crosswalk Results & Quick Search")
+            search_col, dl_col = st.columns([2, 1])
+            with search_col:
+                quick_filter = st.text_input(
+                    "Filter crosswalk table (search by API, Abstract, Survey Name, or County):",
+                    placeholder="Type e.g. 00132761 or Abstract number...",
+                )
+            filtered_df = df
+            if quick_filter.strip():
+                mask = df.astype(str).apply(lambda col: col.str.contains(quick_filter.strip(), case=False, na=False)).any(axis=1)
+                filtered_df = df[mask]
+
+            with dl_col:
+                st.write("")
+                st.write("")
+                csv_data = filtered_df.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    label=f"⬇️ Download CSV ({len(filtered_df):,} rows)",
+                    data=csv_data,
+                    file_name="well_to_survey_crosswalk.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+
+            st.dataframe(filtered_df.head(500), use_container_width=True, height=420)
+            if len(filtered_df) > 500:
+                st.caption(f"Previewing first 500 of {len(filtered_df):,} matching records. Use Download CSV for the complete table.")
 
 # --- TAB 2: Vision-LLM Lease & Deed Extraction ---
 with tab_extract:
-    st.subheader("Extract Run-Sheet Fields from Recorded Instruments")
-    uploaded_docs = st.file_uploader(
-        "Upload County Clerk PDFs or Page Scans (PNG/JPG)",
-        type=["pdf", "png", "jpg", "jpeg"],
-        accept_multiple_files=True,
-    )
+    with st.container(border=True):
+        st.markdown("#### Batch Parse Recorded County Clerk PDFs & Page Scans")
+        st.caption("Extracts Grantor/Grantee, Recording Info, Legal Descriptions, Royalties, and verbatim Pugh/Depth clauses.")
 
-    if st.button("Extract Title Fields", type="primary", disabled=not uploaded_docs):
-        if not api_key:
-            st.warning("Please enter your Gemini API Key in the sidebar first.")
-        else:
-            results = []
-            progress = st.progress(0)
-            for idx, doc in enumerate(uploaded_docs):
-                with st.spinner(f"Parsing {doc.name}..."):
+        uploaded_docs = st.file_uploader(
+            "Drag and drop Oil & Gas Leases, Memorandums, Assignments, or Mineral Deeds",
+            type=["pdf", "png", "jpg", "jpeg"],
+            accept_multiple_files=True,
+        )
+
+        b_col, _ = st.columns([1, 2])
+        with b_col:
+            extract_clicked = st.button(
+                "✨ Extract Title Fields",
+                type="primary",
+                disabled=not uploaded_docs,
+                use_container_width=True,
+            )
+
+        if extract_clicked:
+            if not api_key:
+                st.warning("Enter your Gemini API Key in the left sidebar first.")
+            else:
+                results = []
+                progress = st.progress(0, text="Starting AI document review...")
+                for idx, doc in enumerate(uploaded_docs):
+                    progress.progress(idx / len(uploaded_docs), text=f"Reading {doc.name}...")
                     try:
                         parsed_obj = extract_instrument_with_gemini(
                             file_bytes=doc.getvalue(),
@@ -422,20 +590,281 @@ with tab_extract:
                         )
                         results.append({"file_name": doc.name, "data": parsed_obj})
                     except Exception as exc:
-                        st.error(f"Error parsing {doc.name}: {exc}")
-                progress.progress((idx + 1) / len(uploaded_docs))
-
-            st.session_state.extracted_instruments = results
+                        st.error(f"Could not parse {doc.name}: {exc}")
+                progress.progress(1.0, text="Extraction complete!")
+                st.session_state.extracted_instruments = results
+                st.rerun()
 
     if st.session_state.extracted_instruments:
         for item in st.session_state.extracted_instruments:
             inst: TexasOilGasInstrument = item["data"]
-            with st.expander(
-                f"{item['file_name']} — {inst.instrument_type} ({inst.volume_page_or_instrument_no or 'No Vol/Pg'})",
-                expanded=True,
-            ):
+            with st.container(border=True):
+                header_l, header_r = st.columns([3, 1])
+                with header_l:
+                    st.markdown(f"### 📄 {inst.instrument_type} — `{item['file_name']}`")
+                with header_r:
+                    st.caption(f"Recording Ref: **{inst.volume_page_or_instrument_no or 'Unstated'}**")
+
                 if inst.uncertain_fields:
-                    st.warning(f"Human Review Flagged — Uncertain Fields: {', '.join(inst.uncertain_fields)}")
+                    st.warning(f"Curative Note — Verify handwriting/scan on: **{', '.join(inst.uncertain_fields)}**")
 
                 m1, m2, m3, m4 = st.columns(4)
-                m
+                m1.metric("Execution Date", inst.execution_date or "N/A")
+                m2.metric("Recording Date", inst.recording_date or "N/A")
+                m3.metric("Royalty", inst.royalty_and_term.royalty_fraction_text or "N/A")
+                m4.metric("Pugh Clause", "Present" if inst.depth_and_pugh.pugh_clause_present else "None Detected")
+
+                p_col, l_col = st.columns(2)
+                with p_col:
+                    st.markdown("**Parties**")
+                    st.dataframe([p.model_dump() for p in inst.parties], use_container_width=True, hide_index=True)
+                with l_col:
+                    st.markdown("**Legal Descriptions**")
+                    st.dataframe([ld.model_dump() for ld in inst.legal_descriptions], use_container_width=True, hide_index=True)
+
+                if inst.depth_and_pugh.depth_limitation_text:
+                    st.info(f"**Verbatim Depth Clause:** {inst.depth_and_pugh.depth_limitation_text}")
+
+                if inst.royalty_and_term.verbatim_granting_clause:
+                    with st.expander("View Verbatim Granting Clause & Raw JSON"):
+                        st.text_area(
+                            "Granting Clause",
+                            value=inst.royalty_and_term.verbatim_granting_clause,
+                            height=110,
+                            disabled=True,
+                            key=f"grant_{item['file_name']}",
+                        )
+                        st.json(inst.model_dump())
+
+# --- TAB 3: Custom Run Sheet & Cross-Reference Audit ---
+with tab_crossref:
+    if not st.session_state.extracted_instruments:
+        with st.container(border=True):
+            st.info(
+                "Parse at least one instrument in **Tab 2 (AI Deed & Lease Extractor)** to build your run sheet. "
+                "If you also ran **Tab 1 (Spatial Crosswalk)**, matching RRC well counts and APIs will attach automatically."
+            )
+    else:
+        df = st.session_state.crosswalk_df
+        abstract_col = (
+            next((c for c in df.columns if "ABSTRACT" in c.upper() or "ABST" in c.upper()), None)
+            if df is not None
+            else None
+        )
+        api_col = next((c for c in df.columns if "API" in c.upper()), None) if df is not None else None
+
+        run_sheet_rows = []
+        for item in st.session_state.extracted_instruments:
+            inst: TexasOilGasInstrument = item["data"]
+            lessees = ", ".join([p.name for p in inst.parties if p.role in ("Lessee", "Grantee", "Assignee")])
+            lessors = ", ".join([p.name for p in inst.parties if p.role in ("Lessor", "Grantor", "Assignor")])
+
+            for ld in inst.legal_descriptions or [LegalDescription()]:
+                matching_wells = 0
+                sample_apis = ""
+                if df is not None and abstract_col and ld.abstract_number:
+                    matches = df[df[abstract_col].astype(str).str.strip() == str(ld.abstract_number).strip()]
+                    matching_wells = len(matches)
+                    if api_col and not matches.empty:
+                        sample_apis = ", ".join(matches[api_col].astype(str).head(5).tolist())
+
+                flags = []
+                if inst.uncertain_fields:
+                    flags.append(f"OCR Check: {', '.join(inst.uncertain_fields)}")
+                if inst.depth_and_pugh.depth_limitation_text:
+                    flags.append("Depth Severance")
+                if inst.depth_and_pugh.pugh_clause_present:
+                    flags.append("Pugh Clause")
+                if df is not None and matching_wells == 0:
+                    flags.append("No RRC Wells Matched in Abstract")
+
+                run_sheet_rows.append(
+                    {
+                        "Instrument": inst.instrument_type,
+                        "Vol/Page or Inst #": inst.volume_page_or_instrument_no,
+                        "Exec Date": inst.execution_date,
+                        "Rec Date": inst.recording_date,
+                        "Grantor / Lessor": lessors,
+                        "Grantee / Lessee": lessees,
+                        "County": ld.county,
+                        "Abstract": ld.abstract_number,
+                        "Survey": ld.survey_name,
+                        "Block / Sec": f"{ld.block or '-'} / {ld.section or '-'}",
+                        "Gross Acres": ld.acreage_gross,
+                        "Net Acres": ld.acreage_net,
+                        "Royalty": inst.royalty_and_term.royalty_fraction_text,
+                        "Primary Term": inst.royalty_and_term.primary_term_text,
+                        "Depth Limit": inst.depth_and_pugh.depth_limitation_text,
+                        "Pugh Clause": inst.depth_and_pugh.pugh_clause_present,
+                        "Matching RRC Wells": matching_wells,
+                        "Sample APIs": sample_apis,
+                        "Audit Flags": " | ".join(flags) if flags else "Clean",
+                        "Source File": item["file_name"],
+                    }
+                )
+
+        run_sheet_df = pd.DataFrame(run_sheet_rows)
+
+        with st.container(border=True):
+            st.markdown("#### Client Run-Sheet Template & Export")
+            c_left, c_right = st.columns([1, 2])
+            with c_left:
+                client_project = st.text_input("Prospect / Client Name", value="Texas_Prospect")
+            with c_right:
+                all_cols = list(run_sheet_df.columns)
+                selected_cols = st.multiselect(
+                    "Active Run-Sheet Columns (remove or reorder to match client format):",
+                    options=all_cols,
+                    default=all_cols,
+                )
+
+            display_df = run_sheet_df[selected_cols] if selected_cols else run_sheet_df
+            st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+            safe_proj = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in client_project).strip("_") or "RunSheet"
+            st.download_button(
+                label="⬇️ Export Client Run Sheet (CSV)",
+                data=display_df.to_csv(index=False).encode("utf-8"),
+                file_name=f"{safe_proj}_run_sheet.csv",
+                mime="text/csv",
+                type="primary",
+            )
+
+# --- TAB 4: API & TexasFile Lookup Helpers ---
+with tab_lookup:
+    col_a, col_b = st.columns(2, gap="large")
+
+    with col_a:
+        with st.container(border=True):
+            st.markdown("#### 🛢️ RRC Well & API Formatter")
+            st.caption("Converts 10- or 14-digit Texas API numbers into the 8-digit code used by the RRC GIS Viewer.")
+            api_input = st.text_input("Texas API Number", placeholder="e.g. 42-001-32761 or 00132761")
+            if api_input:
+                clean_api8 = normalize_rrc_api(api_input)
+                st.code(clean_api8, language=None)
+                st.markdown(f"👉 Paste **`{clean_api8}`** into the [RRC Public GIS Viewer](https://gis.rrc.texas.gov/GISViewer/) search bar.")
+
+                if st.session_state.crosswalk_df is not None:
+                    df = st.session_state.crosswalk_df
+                    api_col = next((c for c in df.columns if "API" in c.upper()), None)
+                    if api_col:
+                        hits = df[df[api_col].astype(str).str.contains(clean_api8, na=False)]
+                        if not hits.empty:
+                            st.success(f"Found {len(hits)} matching record(s) in your loaded crosswalk:")
+                            st.dataframe(hits, use_container_width=True, hide_index=True)
+                        else:
+                            st.info("Not found in currently loaded crosswalk.")
+
+    with col_b:
+        with st.container(border=True):
+            st.markdown("#### 🏛️ TexasFile Search String Builder")
+            st.caption("Formats individual names into `LastName FirstName` convention for county grantor/grantee indexes.")
+            party_input = st.text_input("Mineral Owner / Entity Name", placeholder="e.g. Michael Smith or Apache Corporation")
+            abstract_input = st.text_input("Abstract Number (Optional)", placeholder="e.g. 28")
+
+            if party_input or abstract_input:
+                if party_input:
+                    tf_name = format_texasfile_name(party_input)
+                    st.markdown("**Formatted Party Query:**")
+                    st.code(tf_name, language=None)
+                if abstract_input:
+                    st.markdown("**Abstract Reference Query:**")
+                    st.code(abstract_input.strip(), language=None)
+                st.markdown("👉 Run this search on [TexasFile County Records](https://www.texasfile.com/).")
+
+# --- TAB 5: NMA / NRI Ownership Calculator ---
+with tab_math:
+    with st.container(border=True):
+        st.markdown("#### Tract & Unit Acreage Parameters")
+        c1, c2 = st.columns(2)
+        with c1:
+            gross_tract_acres = st.number_input("Gross Tract Acres", min_value=0.0, value=640.0, step=10.0)
+        with c2:
+            unit_acres = st.number_input(
+                "Pooled Unit Acres (keep equal to Gross Tract Acres if unpooled)",
+                min_value=0.01,
+                value=640.0,
+                step=10.0,
+            )
+
+        st.markdown("#### Mineral Ownership & Lease Burdens")
+        st.caption("Click `+` at the bottom of the table to add mineral owners. Accepts fractions (`1/4`, `3/16`) or decimals (`0.25`).")
+        edited_owners = st.data_editor(
+            pd.DataFrame(st.session_state.doi_owners),
+            num_rows="dynamic",
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Owner Name": st.column_config.TextColumn("Owner Name", required=True),
+                "Mineral Fraction": st.column_config.TextColumn("Mineral Interest (e.g. 1/4)", default="1/8"),
+                "Leased": st.column_config.CheckboxColumn("Leased?", default=True),
+                "Lease Royalty": st.column_config.TextColumn("Lease Royalty (e.g. 1/5)", default="1/5"),
+            },
+        )
+
+    doi_rows = []
+    total_mi = 0.0
+    total_nma = 0.0
+    total_royalty_nri = 0.0
+    total_wi_nri = 0.0
+
+    for _, row in edited_owners.iterrows():
+        owner = str(row.get("Owner Name") or "").strip()
+        if not owner:
+            continue
+        try:
+            mi = parse_fraction_or_decimal(str(row.get("Mineral Fraction") or "0"))
+            roy = parse_fraction_or_decimal(str(row.get("Lease Royalty") or "0")) if row.get("Leased") else 0.0
+        except Exception:
+            st.error(f"Invalid fraction or decimal for owner **{owner}**.")
+            continue
+
+        nma = gross_tract_acres * mi
+        tract_factor = gross_tract_acres / unit_acres
+        owner_nri = mi * roy * tract_factor if row.get("Leased") else 0.0
+        lessee_wi = mi * tract_factor if row.get("Leased") else 0.0
+        lessee_nri = mi * (1.0 - roy) * tract_factor if row.get("Leased") else 0.0
+
+        total_mi += mi
+        total_nma += nma
+        total_royalty_nri += owner_nri
+        total_wi_nri += lessee_nri
+
+        doi_rows.append(
+            {
+                "Owner Name": owner,
+                "Status": "Leased" if row.get("Leased") else "Unleased Mineral Owner",
+                "Mineral Interest": round(mi, 8),
+                "Gross Acres": gross_tract_acres,
+                "Net Mineral Acres (NMA)": round(nma, 4),
+                "Lease Royalty": round(roy, 8),
+                "Owner Unit NRI": round(owner_nri, 8),
+                "Lessee Unit WI": round(lessee_wi, 8),
+                "Lessee Unit NRI": round(lessee_nri, 8),
+            }
+        )
+
+    if doi_rows:
+        with st.container(border=True):
+            st.markdown("#### Division of Interest (DOI) Summary")
+            doi_df = pd.DataFrame(doi_rows)
+            m_a, m_b, m_c, m_d = st.columns(4)
+            m_a.metric("Mineral Interest Accounted", f"{total_mi * 100:.4f}%")
+            m_b.metric("Total Net Mineral Acres", f"{total_nma:,.4f} NMA")
+            m_c.metric("Royalty Owner Unit NRI", f"{total_royalty_nri:.8f}")
+            m_d.metric("Lessee Net Revenue (NRI)", f"{total_wi_nri:.8f}")
+
+            if abs(total_mi - 1.0) > 1e-6:
+                st.warning(
+                    f"Total mineral interest is **{total_mi * 100:.4f}%** "
+                    f"({(1.0 - total_mi) * 100:.4f}% remaining unaccounted)."
+                )
+
+            st.dataframe(doi_df, use_container_width=True, hide_index=True)
+            st.download_button(
+                label="⬇️ Export Division of Interest (CSV)",
+                data=doi_df.to_csv(index=False).encode("utf-8"),
+                file_name="division_of_interest_nma_nri.csv",
+                mime="text/csv",
+                type="primary",
+            )
