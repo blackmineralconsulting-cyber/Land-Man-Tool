@@ -1,5 +1,6 @@
 import os
 import tempfile
+import zipfile
 from typing import Literal
 
 import geopandas as gpd
@@ -85,17 +86,27 @@ Extract only what is supported by the provided document pages. Never guess or in
 
 
 # ---------------------------------------------------------------------------
-# 2. Helper Functions
+# 2. Geospatial & Helper Functions
 # ---------------------------------------------------------------------------
-def load_geodata_from_upload(uploaded_file) -> gpd.GeoDataFrame:
-    """Reads an uploaded .zip (shapefile bundle) or .geojson into a GeoDataFrame."""
+def list_shapefiles_in_zip(file_bytes: bytes) -> list[str]:
+    """Lists all .shp files inside an uploaded zip archive."""
+    import io
+    with zipfile.ZipFile(io.BytesIO(file_bytes)) as zf:
+        return [name for name in zf.namelist() if name.lower().endswith(".shp") and not name.startswith("__MACOSX")]
+
+
+def load_geodata_from_upload(uploaded_file, selected_shp: str | None = None) -> gpd.GeoDataFrame:
+    """Reads an uploaded .zip (supporting multi-shapefile bundles) or .geojson into a GeoDataFrame."""
     suffix = os.path.splitext(uploaded_file.name)[1].lower()
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(uploaded_file.getvalue())
         tmp_path = tmp.name
 
     try:
-        gdf = gpd.read_file(tmp_path)
+        if suffix == ".zip" and selected_shp:
+            gdf = gpd.read_file(f"zip://{tmp_path}!{selected_shp}")
+        else:
+            gdf = gpd.read_file(tmp_path)
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
@@ -122,6 +133,23 @@ def run_spatial_join(
 
     joined = gpd.sjoin(wells_proj, surveys_proj, how="left", predicate="intersects")
     return pd.DataFrame(joined.drop(columns=["geometry", "index_right"], errors="ignore"))
+
+
+def format_texasfile_name(full_name: str) -> str:
+    """Converts 'Michael Smith' to 'Smith Michael' for TexasFile name searches."""
+    parts = [p.strip() for p in full_name.replace(",", " ").split() if p.strip()]
+    corp_tokens = {"INC", "LLC", "LP", "LTD", "CORP", "COMPANY", "CO", "ENERGY", "OIL", "GAS", "RESOURCES", "TRUST", "ESTATE"}
+    if any(p.upper().strip(".") in corp_tokens for p in parts) or len(parts) < 2:
+        return full_name.strip()
+    return f"{parts[-1]} {' '.join(parts[:-1])}"
+
+
+def normalize_rrc_api(api_raw: str) -> str:
+    """Strips hyphens and leading '42' Texas state code to get the 8-digit RRC GIS Viewer API."""
+    digits = "".join(ch for ch in api_raw if ch.isdigit())
+    if len(digits) >= 10 and digits.startswith("42"):
+        return digits[2:10]
+    return digits[:8]
 
 
 def extract_instrument_with_gemini(
@@ -153,9 +181,8 @@ def extract_instrument_with_gemini(
 # ---------------------------------------------------------------------------
 st.set_page_config(page_title="Texas O&G Landman Workbench", layout="wide")
 st.title("Texas Oil & Gas Landman Workbench")
-st.caption("RRC Spatial-to-Survey Crosswalk & Vision-LLM County Deed/Lease Extractor")
+st.caption("RRC Spatial-to-Survey Crosswalk • Vision-LLM Lease Extractor • County & API Research Helpers")
 
-# Initialize session state so tabs can share results
 if "crosswalk_df" not in st.session_state:
     st.session_state.crosswalk_df = None
 if "extracted_instruments" not in st.session_state:
@@ -180,9 +207,19 @@ with st.sidebar:
     st.subheader("CRS Defaults")
     fallback_crs = st.text_input("Fallback CRS (if .prj missing)", value="EPSG:4267")
     target_crs = st.text_input("Target Planar CRS", value="EPSG:3083")
+    st.divider()
+    st.subheader("Quick External Portals")
+    st.markdown("- [RRC Public GIS Viewer](https://gis.rrc.texas.gov/)")
+    st.markdown("- [RRC Bulk Data Downloads](https://www.rrc.texas.gov/resource-center/research/data-sets-available-for-download/)")
+    st.markdown("- [TexasFile County Search](https://www.texasfile.com/search/texas/)")
 
-tab_spatial, tab_extract, tab_crossref = st.tabs(
-    ["1. RRC Spatial Join", "2. Lease / Deed Extractor", "3. Cross-Reference Audit"]
+tab_spatial, tab_extract, tab_crossref, tab_lookup = st.tabs(
+    [
+        "1. RRC Spatial Join",
+        "2. Lease / Deed Extractor",
+        "3. Cross-Reference Audit",
+        "4. API & TexasFile Lookup",
+    ]
 )
 
 # --- TAB 1: Spatial-to-Survey Join ---
@@ -193,28 +230,57 @@ with tab_spatial:
     )
 
     col1, col2 = st.columns(2)
+    wells_selected_shp = None
+    surveys_selected_shp = None
+
     with col1:
         wells_file = st.file_uploader("RRC Wells Layer (.zip or .geojson)", type=["zip", "geojson"])
+        if wells_file and wells_file.name.lower().endswith(".zip"):
+            shp_list = list_shapefiles_in_zip(wells_file.getvalue())
+            if len(shp_list) > 1:
+                wells_selected_shp = st.selectbox(
+                    "Multiple shapefiles found in Wells zip — select layer (e.g., surface 's' or bottomhole 'b'):",
+                    options=shp_list,
+                )
+            elif len(shp_list) == 1:
+                wells_selected_shp = shp_list[0]
+                st.caption(f"Detected layer: `{wells_selected_shp}`")
+
     with col2:
         surveys_file = st.file_uploader("Texas GLO / RRC Survey Layer (.zip or .geojson)", type=["zip", "geojson"])
+        if surveys_file and surveys_file.name.lower().endswith(".zip"):
+            shp_list_s = list_shapefiles_in_zip(surveys_file.getvalue())
+            if len(shp_list_s) > 1:
+                # Prefer polygon layers ('p.shp') by default if present
+                poly_idx = next((i for i, name in enumerate(shp_list_s) if name.lower().endswith("p.shp")), 0)
+                surveys_selected_shp = st.selectbox(
+                    "Multiple shapefiles found in Survey zip — select polygon layer (usually ends in 'p.shp'):",
+                    options=shp_list_s,
+                    index=poly_idx,
+                )
+            elif len(shp_list_s) == 1:
+                surveys_selected_shp = shp_list_s[0]
+                st.caption(f"Detected layer: `{surveys_selected_shp}`")
 
     if st.button("Run Spatial Join", type="primary", disabled=not (wells_file and surveys_file)):
         with st.spinner("Reprojecting to common CRS and running spatial intersection..."):
             try:
-                wells_gdf = load_geodata_from_upload(wells_file)
-                surveys_gdf = load_geodata_from_upload(surveys_file)
+                wells_gdf = load_geodata_from_upload(wells_file, wells_selected_shp)
+                surveys_gdf = load_geodata_from_upload(surveys_file, surveys_selected_shp)
                 crosswalk_df = run_spatial_join(wells_gdf, surveys_gdf, fallback_crs, target_crs)
                 st.session_state.crosswalk_df = crosswalk_df
-                st.success(f"Matched {len(crosswalk_df)} well-to-survey records.")
+                st.success(f"Matched {len(crosswalk_df):,} well-to-survey records.")
             except Exception as exc:
                 st.error(f"Spatial join failed: {exc}")
 
     if st.session_state.crosswalk_df is not None:
         df = st.session_state.crosswalk_df
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(df.head(500), use_container_width=True)
+        if len(df) > 500:
+            st.caption(f"Showing first 500 of {len(df):,} rows in browser. Download the CSV below for the full dataset.")
         csv_data = df.to_csv(index=False).encode("utf-8")
         st.download_button(
-            label="Download Crosswalk CSV",
+            label="Download Full Crosswalk CSV",
             data=csv_data,
             file_name="well_to_survey_crosswalk.csv",
             mime="text/csv",
@@ -297,8 +363,8 @@ with tab_crossref:
         )
     else:
         df = st.session_state.crosswalk_df
-        # Detect likely abstract/survey columns from the spatial join
         abstract_col = next((c for c in df.columns if "ABSTRACT" in c.upper() or "ABST" in c.upper()), None)
+        api_col = next((c for c in df.columns if "API" in c.upper()), None)
 
         run_sheet_rows = []
         for item in st.session_state.extracted_instruments:
@@ -312,9 +378,19 @@ with tab_crossref:
                 if abstract_col and ld.abstract_number:
                     matches = df[df[abstract_col].astype(str).str.strip() == str(ld.abstract_number).strip()]
                     matching_wells = len(matches)
-                    api_col = next((c for c in df.columns if "API" in c.upper()), None)
                     if api_col and not matches.empty:
                         sample_apis = ", ".join(matches[api_col].astype(str).head(5).tolist())
+
+                # Build curative/audit flags
+                flags = []
+                if inst.uncertain_fields:
+                    flags.append(f"OCR Check: {', '.join(inst.uncertain_fields)}")
+                if inst.depth_and_pugh.depth_limitation_text:
+                    flags.append("Depth Severance")
+                if inst.depth_and_pugh.pugh_clause_present:
+                    flags.append("Pugh Clause")
+                if matching_wells == 0:
+                    flags.append("No RRC Wells Matched in Abstract")
 
                 run_sheet_rows.append(
                     {
@@ -334,6 +410,7 @@ with tab_crossref:
                         "Pugh Clause": inst.depth_and_pugh.pugh_clause_present,
                         "Matching RRC Wells": matching_wells,
                         "Sample APIs": sample_apis,
+                        "Audit Flags": " | ".join(flags) if flags else "Clean",
                     }
                 )
 
@@ -345,3 +422,46 @@ with tab_crossref:
             file_name="preliminary_landman_run_sheet.csv",
             mime="text/csv",
         )
+
+# --- TAB 4: API & TexasFile Lookup Helpers ---
+with tab_lookup:
+    st.subheader("RRC API Lookup & TexasFile Search Generator")
+    col_a, col_b = st.columns(2)
+
+    with col_a:
+        st.markdown("### 1. RRC Well / API Lookup")
+        api_input = st.text_input("Enter Texas API Number (e.g., 42-389-34567 or 38934567)")
+        if api_input:
+            clean_api8 = normalize_rrc_api(api_input)
+            st.success(f"8-Digit RRC GIS Viewer API: **`{clean_api8}`**")
+            st.markdown(
+                f"1. Copy **`{clean_api8}`** above.\n"
+                f"2. Open the [RRC Public GIS Viewer](https://gis.rrc.texas.gov/) and paste into the top-right API search box."
+            )
+
+            # Search loaded crosswalk if available
+            if st.session_state.crosswalk_df is not None:
+                df = st.session_state.crosswalk_df
+                api_col = next((c for c in df.columns if "API" in c.upper()), None)
+                if api_col:
+                    hits = df[df[api_col].astype(str).str.contains(clean_api8, na=False)]
+                    if not hits.empty:
+                        st.markdown("**Matching Records in Your Uploaded Crosswalk:**")
+                        st.dataframe(hits, use_container_width=True)
+                    else:
+                        st.info("No matching API found in your currently loaded crosswalk table.")
+
+    with col_b:
+        st.markdown("### 2. TexasFile Search String Builder")
+        party_input = st.text_input("Party / Mineral Owner Name (e.g., Michael Smith or Apache Corporation)")
+        abstract_input = st.text_input("Abstract Number (optional, e.g., 28)")
+
+        if party_input or abstract_input:
+            if party_input:
+                tf_name = format_texasfile_name(party_input)
+                st.code(tf_name, language=None)
+                st.caption("Formatted `LastName FirstName` for TexasFile's Name Search box.")
+            if abstract_input:
+                st.code(abstract_input.strip(), language=None)
+                st.caption("Enter into TexasFile's Reference / Legal Search box at the bottom of the county search page.")
+            st.markdown("Open [TexasFile County Records Search](https://www.texasfile.com/search/texas/) to run this query.")
