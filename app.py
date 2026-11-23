@@ -474,8 +474,10 @@ def format_texasfile_name(full_name: str) -> str:
     """Converts 'Michael Smith' to 'Smith Michael' for TexasFile name searches."""
     parts = [p.strip() for p in full_name.replace(",", " ").split() if p.strip()]
     corp_tokens = {
-        "INC", "LLC", "LP", "LTD", "CORP", "COMPANY", "CO", "ENERGY",
-        "OIL", "GAS", "RESOURCES", "TRUST", "ESTATE",
+        "INC", "LLC", "LP", "LLP", "LTD", "CORP", "CORPORATION", "COMPANY", "CO",
+        "ENERGY", "OIL", "GAS", "RESOURCES", "TRUST", "ESTATE", "ENTERPRISE",
+        "ENTERPRISES", "PARTNERS", "PARTNERSHIP", "HOLDINGS", "GROUP",
+        "PETROLEUM", "PRODUCTION", "EXPLORATION", "MINERALS", "ASSOCIATES",
     }
     if any(p.upper().strip(".") in corp_tokens for p in parts) or len(parts) < 2:
         return full_name.strip()
@@ -698,7 +700,7 @@ with tab_spatial:
         st.write("")
         btn_col, _ = st.columns([1, 2])
         with btn_col:
-            run_join_clicked = st.button("⚡ Run Spatial Join", type="primary", use_container_width=True)
+            run_join_clicked = st.button("⚡ Run Spatial Join", type="primary", width="stretch")
 
         if run_join_clicked:
             if wells_file is None or surveys_file is None:
@@ -748,10 +750,10 @@ with tab_spatial:
                     data=csv_data,
                     file_name="well_to_survey_crosswalk.csv",
                     mime="text/csv",
-                    use_container_width=True,
+                    width="stretch",
                 )
 
-            st.dataframe(filtered_df.head(500), use_container_width=True, height=420)
+            st.dataframe(filtered_df.head(500), width="stretch", height=420)
             if len(filtered_df) > 500:
                 st.caption(f"Previewing first 500 of {len(filtered_df):,} matching records. Use Download CSV for the complete table.")
 
@@ -776,7 +778,7 @@ with tab_extract:
                 "✨ Extract Title Fields",
                 type="primary",
                 disabled=not uploaded_docs,
-                use_container_width=True,
+                width="stretch",
             )
 
         if extract_clicked:
@@ -823,10 +825,10 @@ with tab_extract:
                 p_col, l_col = st.columns(2)
                 with p_col:
                     st.markdown("**Parties**")
-                    st.dataframe([p.model_dump() for p in inst.parties], use_container_width=True, hide_index=True)
+                    st.dataframe([p.model_dump() for p in inst.parties], width="stretch", hide_index=True)
                 with l_col:
                     st.markdown("**Legal Descriptions**")
-                    st.dataframe([ld.model_dump() for ld in inst.legal_descriptions], use_container_width=True, hide_index=True)
+                    st.dataframe([ld.model_dump() for ld in inst.legal_descriptions], width="stretch", hide_index=True)
 
                 if inst.depth_and_pugh.depth_limitation_text:
                     st.info(f"**Verbatim Depth Clause:** {inst.depth_and_pugh.depth_limitation_text}")
@@ -932,7 +934,7 @@ with tab_crossref:
                 )
 
             display_df = run_sheet_df[selected_cols] if selected_cols else run_sheet_df
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
+            st.dataframe(display_df, width="stretch", hide_index=True)
 
             safe_proj = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in client_project).strip("_") or "RunSheet"
             st.download_button(
@@ -966,7 +968,7 @@ with tab_lookup:
                         hits = df[df[api_col].astype(str).str.contains(clean_api8, na=False)]
                         if not hits.empty:
                             st.success(f"Found {len(hits)} matching record(s) in your loaded crosswalk:")
-                            st.dataframe(hits, use_container_width=True, hide_index=True)
+                            st.dataframe(hits, width="stretch", hide_index=True)
                         else:
                             st.info("Not found in currently loaded crosswalk.")
 
@@ -1012,7 +1014,7 @@ with tab_math:
         edited_owners = st.data_editor(
             pd.DataFrame(st.session_state.doi_owners),
             num_rows="dynamic",
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             column_config={
                 "Owner Name": st.column_config.TextColumn("Owner Name", required=True),
@@ -1083,7 +1085,7 @@ with tab_math:
                     f"({(1.0 - total_mi) * 100:.4f}% remaining unaccounted)."
                 )
 
-            st.dataframe(doi_df, use_container_width=True, hide_index=True)
+            st.dataframe(doi_df, width="stretch", hide_index=True)
             st.download_button(
                 label="⬇️ Export Division of Interest (CSV)",
                 data=doi_df.to_csv(index=False).encode("utf-8"),
