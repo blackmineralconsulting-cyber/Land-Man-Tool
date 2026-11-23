@@ -2,6 +2,7 @@ import io
 import os
 import tempfile
 import zipfile
+from fractions import Fraction
 from typing import Literal
 
 import geopandas as gpd
@@ -87,7 +88,7 @@ Extract only what is supported by the provided document pages. Never guess or in
 
 
 # ---------------------------------------------------------------------------
-# 2. Geospatial & Helper Functions (Handles Nested RRC Zips!)
+# 2. Geospatial, Title Math & Helper Functions
 # ---------------------------------------------------------------------------
 def extract_zip_recursive(zip_bytes: bytes, dest_dir: str):
     """Unpacks a zip file and any inner .zip files (common in RRC bulk downloads)."""
@@ -122,7 +123,6 @@ def inspect_uploaded_archive(file_name: str, file_bytes: bytes) -> tuple[list[st
             if ext == ".shp":
                 shp_names.append(name)
             elif ext == ".zip":
-                # Peek inside nested zip
                 try:
                     inner_bytes = zf.read(name)
                     with zipfile.ZipFile(io.BytesIO(inner_bytes)) as izf:
@@ -134,19 +134,26 @@ def inspect_uploaded_archive(file_name: str, file_bytes: bytes) -> tuple[list[st
     return sorted(shp_names), sorted(exts)
 
 
-def load_geodata_from_upload(uploaded_file, selected_layer: str | None = None) -> gpd.GeoDataFrame:
-    """Unpacks upload (including nested zips) into a temp folder and loads the selected shapefile."""
+def load_batch_geodata_from_upload(
+    uploaded_file,
+    selected_layers: list[str] | None = None,
+    fallback_crs: str = "EPSG:4267",
+    target_crs: str = "EPSG:3083",
+) -> gpd.GeoDataFrame:
+    """Loads one or multiple selected shapefiles from an upload, aligns CRS, and concatenates them."""
     with tempfile.TemporaryDirectory() as tmpdir:
         suffix = os.path.splitext(uploaded_file.name)[1].lower()
         if suffix != ".zip":
             raw_path = os.path.join(tmpdir, uploaded_file.name)
             with open(raw_path, "wb") as f:
                 f.write(uploaded_file.getvalue())
-            return gpd.read_file(raw_path)
+            gdf = gpd.read_file(raw_path)
+            if gdf.crs is None:
+                gdf = gdf.set_crs(fallback_crs)
+            return gdf.to_crs(target_crs)
 
         extract_zip_recursive(uploaded_file.getvalue(), tmpdir)
 
-        # Find all extracted .shp files
         all_shps = []
         for root, _, files in os.walk(tmpdir):
             for fname in files:
@@ -154,47 +161,59 @@ def load_geodata_from_upload(uploaded_file, selected_layer: str | None = None) -
                     all_shps.append(os.path.join(root, fname))
 
         if not all_shps:
-            raise ValueError(
-                "No .shp shapefile found inside this zip. Make sure you uploaded an ESRI Shapefile zip (not a PDF or CSV bundle)."
-            )
+            raise ValueError("No .shp shapefile found inside this zip.")
 
-        chosen_path = all_shps[0]
-        if selected_layer:
-            target_basename = os.path.basename(selected_layer.split("->")[-1].strip())
-            for candidate in all_shps:
-                if os.path.basename(candidate) == target_basename:
-                    chosen_path = candidate
-                    break
+        chosen_paths = []
+        if selected_layers:
+            target_basenames = {os.path.basename(lbl.split("->")[-1].strip()) for lbl in selected_layers}
+            chosen_paths = [p for p in all_shps if os.path.basename(p) in target_basenames]
 
-        return gpd.read_file(chosen_path)
+        if not chosen_paths:
+            chosen_paths = [all_shps[0]]
+
+        gdfs = []
+        for shp_path in chosen_paths:
+            part_gdf = gpd.read_file(shp_path)
+            if part_gdf.crs is None:
+                part_gdf = part_gdf.set_crs(fallback_crs)
+            part_gdf = part_gdf.to_crs(target_crs)
+            part_gdf["SOURCE_LAYER"] = os.path.basename(shp_path)
+            gdfs.append(part_gdf)
+
+        combined = pd.concat(gdfs, ignore_index=True)
+        return gpd.GeoDataFrame(combined, geometry="geometry", crs=target_crs)
 
 
-def run_spatial_join(
+def run_batch_spatial_join(
     wells_gdf: gpd.GeoDataFrame,
     surveys_gdf: gpd.GeoDataFrame,
-    fallback_crs: str = "EPSG:4267",
-    target_crs: str = "EPSG:3083",
 ) -> pd.DataFrame:
-    """Aligns CRS (defaulting missing .prj to NAD27) and intersects wells with surveys."""
-    if wells_gdf.crs is None:
-        wells_gdf = wells_gdf.set_crs(fallback_crs)
-    if surveys_gdf.crs is None:
-        surveys_gdf = surveys_gdf.set_crs(fallback_crs)
-
-    wells_proj = wells_gdf.to_crs(target_crs)
-    surveys_proj = surveys_gdf.to_crs(target_crs)
-
-    wells_proj = wells_proj[wells_proj.geometry.is_valid & ~wells_proj.geometry.is_empty]
-    surveys_proj = surveys_proj[surveys_proj.geometry.is_valid & ~surveys_proj.geometry.is_empty]
-
-    joined = gpd.sjoin(wells_proj, surveys_proj, how="left", predicate="intersects")
+    """Intersects aligned wells GeoDataFrame with surveys GeoDataFrame."""
+    wells_clean = wells_gdf[wells_gdf.geometry.is_valid & ~wells_gdf.geometry.is_empty]
+    surveys_clean = surveys_gdf[surveys_gdf.geometry.is_valid & ~surveys_gdf.geometry.is_empty]
+    joined = gpd.sjoin(wells_clean, surveys_clean, how="left", predicate="intersects")
     return pd.DataFrame(joined.drop(columns=["geometry", "index_right"], errors="ignore"))
+
+
+def parse_fraction_or_decimal(val_str: str) -> float:
+    """Parses strings like '1/8', '3/16', '0.25', or '25%' into a float."""
+    cleaned = val_str.strip()
+    if not cleaned:
+        return 0.0
+    if cleaned.endswith("%"):
+        return float(cleaned[:-1].strip()) / 100.0
+    if "/" in cleaned:
+        return float(Fraction(cleaned))
+    return float(cleaned)
 
 
 def format_texasfile_name(full_name: str) -> str:
     """Converts 'Michael Smith' to 'Smith Michael' for TexasFile name searches."""
     parts = [p.strip() for p in full_name.replace(",", " ").split() if p.strip()]
-    corp_tokens = {"INC", "LLC", "LP", "LTD", "CORP", "COMPANY", "CO", "ENERGY", "OIL", "GAS", "RESOURCES", "TRUST", "ESTATE"}
+    corp_tokens = {
+        "INC", "LLC", "LP", "LTD", "CORP", "COMPANY", "CO", "ENERGY",
+        "OIL", "GAS", "RESOURCES", "TRUST", "ESTATE",
+    }
     if any(p.upper().strip(".") in corp_tokens for p in parts) or len(parts) < 2:
         return full_name.strip()
     return f"{parts[-1]} {' '.join(parts[:-1])}"
@@ -237,12 +256,16 @@ def extract_instrument_with_gemini(
 # ---------------------------------------------------------------------------
 st.set_page_config(page_title="Texas O&G Landman Workbench", layout="wide")
 st.title("Texas Oil & Gas Landman Workbench")
-st.caption("RRC Spatial-to-Survey Crosswalk • Vision-LLM Lease Extractor • County & API Research Helpers")
+st.caption("Multi-County Spatial Crosswalk • Vision-LLM Lease Extractor • Custom Run Sheets • NMA/NRI Math")
 
 if "crosswalk_df" not in st.session_state:
     st.session_state.crosswalk_df = None
 if "extracted_instruments" not in st.session_state:
     st.session_state.extracted_instruments = []
+if "doi_owners" not in st.session_state:
+    st.session_state.doi_owners = [
+        {"Owner Name": "Example Mineral Owner", "Mineral Fraction": "1/4", "Leased": True, "Lease Royalty": "1/5"}
+    ]
 
 # Sidebar Configuration
 with st.sidebar:
@@ -269,69 +292,94 @@ with st.sidebar:
     st.markdown("- [RRC Bulk Data Downloads](https://www.rrc.texas.gov/resource-center/research/data-sets-available-for-download/)")
     st.markdown("- [TexasFile County Search](https://www.texasfile.com/)")
 
-tab_spatial, tab_extract, tab_crossref, tab_lookup = st.tabs(
+tab_spatial, tab_extract, tab_crossref, tab_lookup, tab_math = st.tabs(
     [
-        "1. RRC Spatial Join",
+        "1. Multi-County Spatial Join",
         "2. Lease / Deed Extractor",
-        "3. Cross-Reference Audit",
+        "3. Custom Run Sheet & Audit",
         "4. API & TexasFile Lookup",
+        "5. NMA / NRI Calculator",
     ]
 )
 
-# --- TAB 1: Spatial-to-Survey Join ---
+# --- TAB 1: Multi-County Spatial-to-Survey Join ---
 with tab_spatial:
-    st.subheader("Map RRC Well Layers to Texas Legal Surveys")
+    st.subheader("Map RRC Well Layers to Texas Legal Surveys (Single or Multi-County Batch)")
     st.markdown(
-        "Upload zipped ESRI shapefiles (`.zip` containing `.shp`, `.shx`, `.dbf`, `.prj`) or `.geojson` files."
+        "Upload zipped ESRI shapefiles (`.zip` containing one or multiple county `.shp` layers) or `.geojson` files."
     )
 
     col1, col2 = st.columns(2)
-    wells_selected_shp = None
-    surveys_selected_shp = None
+    wells_selected_shps = []
+    surveys_selected_shps = []
 
     with col1:
-        wells_file = st.file_uploader("RRC Wells Layer (.zip or .geojson)", type=["zip", "geojson"])
+        wells_file = st.file_uploader("RRC Wells Layer(s) (.zip or .geojson)", type=["zip", "geojson"])
         if wells_file is not None:
             shp_list, exts = inspect_uploaded_archive(wells_file.name, wells_file.getvalue())
             if len(shp_list) > 1:
-                wells_selected_shp = st.selectbox(
-                    "Select Wells shapefile layer (e.g., surface 's' or bottomhole 'b'):",
-                    options=shp_list,
+                join_all_wells = st.checkbox(
+                    f"Batch-select all {len(shp_list)} well layers in archive", value=False, key="all_w"
                 )
+                if join_all_wells:
+                    wells_selected_shps = shp_list
+                else:
+                    default_w = [s for s in shp_list if s.lower().endswith("b.shp")][:1] or [shp_list[0]]
+                    wells_selected_shps = st.multiselect(
+                        "Select one or more Wells layers (e.g., surface 's.shp' or bottomhole 'b.shp'):",
+                        options=shp_list,
+                        default=default_w,
+                    )
             elif len(shp_list) == 1:
-                wells_selected_shp = shp_list[0]
-                st.success(f"Detected layer: `{wells_selected_shp}`")
+                wells_selected_shps = shp_list
+                st.success(f"Detected layer: `{shp_list[0]}`")
             else:
-                st.error(f"No `.shp` file found inside `{wells_file.name}` (found extensions: {', '.join(exts)}).")
+                st.error(f"No `.shp` file found inside `{wells_file.name}` (found: {', '.join(exts)}).")
 
     with col2:
-        surveys_file = st.file_uploader("Texas GLO / RRC Survey Layer (.zip or .geojson)", type=["zip", "geojson"])
+        surveys_file = st.file_uploader("Texas GLO / RRC Survey Layer(s) (.zip or .geojson)", type=["zip", "geojson"])
         if surveys_file is not None:
             shp_list_s, exts_s = inspect_uploaded_archive(surveys_file.name, surveys_file.getvalue())
             if len(shp_list_s) > 1:
-                poly_idx = next((i for i, name in enumerate(shp_list_s) if name.lower().endswith("p.shp")), 0)
-                surveys_selected_shp = st.selectbox(
-                    "Select Survey polygon layer (usually ends in 'p.shp'):",
-                    options=shp_list_s,
-                    index=poly_idx,
+                poly_layers = [s for s in shp_list_s if s.lower().endswith("p.shp")]
+                join_all_polys = st.checkbox(
+                    f"Batch-select all {len(poly_layers) or len(shp_list_s)} survey polygon layers",
+                    value=False,
+                    key="all_s",
                 )
+                if join_all_polys:
+                    surveys_selected_shps = poly_layers or shp_list_s
+                else:
+                    default_s = poly_layers[:1] or [shp_list_s[0]]
+                    surveys_selected_shps = st.multiselect(
+                        "Select one or more Survey polygon layers (usually ends in 'p.shp'):",
+                        options=shp_list_s,
+                        default=default_s,
+                    )
             elif len(shp_list_s) == 1:
-                surveys_selected_shp = shp_list_s[0]
-                st.success(f"Detected layer: `{surveys_selected_shp}`")
+                surveys_selected_shps = shp_list_s
+                st.success(f"Detected layer: `{shp_list_s[0]}`")
             else:
-                st.error(f"No `.shp` file found inside `{surveys_file.name}` (found extensions: {', '.join(exts_s)}).")
+                st.error(f"No `.shp` file found inside `{surveys_file.name}` (found: {', '.join(exts_s)}).")
 
     if st.button("Run Spatial Join", type="primary"):
         if wells_file is None or surveys_file is None:
             st.warning("Please upload both a Wells layer and a Survey layer first.")
         else:
-            with st.spinner("Unpacking layers, aligning CRS, and running spatial intersection..."):
+            with st.spinner("Unpacking layers, aligning CRS across selected counties, and running spatial join..."):
                 try:
-                    wells_gdf = load_geodata_from_upload(wells_file, wells_selected_shp)
-                    surveys_gdf = load_geodata_from_upload(surveys_file, surveys_selected_shp)
-                    crosswalk_df = run_spatial_join(wells_gdf, surveys_gdf, fallback_crs, target_crs)
+                    wells_gdf = load_batch_geodata_from_upload(
+                        wells_file, wells_selected_shps, fallback_crs, target_crs
+                    )
+                    surveys_gdf = load_batch_geodata_from_upload(
+                        surveys_file, surveys_selected_shps, fallback_crs, target_crs
+                    )
+                    crosswalk_df = run_batch_spatial_join(wells_gdf, surveys_gdf)
                     st.session_state.crosswalk_df = crosswalk_df
-                    st.success(f"Matched {len(crosswalk_df):,} well-to-survey records.")
+                    st.success(
+                        f"Matched {len(crosswalk_df):,} well-to-survey records across "
+                        f"{len(wells_selected_shps) or 1} well layer(s) and {len(surveys_selected_shps) or 1} survey layer(s)."
+                    )
                 except Exception as exc:
                     st.error(f"Spatial join failed: {exc}")
 
@@ -390,138 +438,4 @@ with tab_extract:
                     st.warning(f"Human Review Flagged — Uncertain Fields: {', '.join(inst.uncertain_fields)}")
 
                 m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Execution Date", inst.execution_date or "N/A")
-                m2.metric("Recording Date", inst.recording_date or "N/A")
-                m3.metric("Royalty", inst.royalty_and_term.royalty_fraction_text or "N/A")
-                m4.metric("Pugh Clause", "Yes" if inst.depth_and_pugh.pugh_clause_present else "No / Unstated")
-
-                st.markdown("**Parties**")
-                st.dataframe([p.model_dump() for p in inst.parties], use_container_width=True)
-
-                st.markdown("**Legal Descriptions**")
-                st.dataframe([ld.model_dump() for ld in inst.legal_descriptions], use_container_width=True)
-
-                if inst.depth_and_pugh.depth_limitation_text:
-                    st.info(f"**Depth Clause (Verbatim):** {inst.depth_and_pugh.depth_limitation_text}")
-
-                if inst.royalty_and_term.verbatim_granting_clause:
-                    st.text_area(
-                        "Verbatim Granting Clause",
-                        value=inst.royalty_and_term.verbatim_granting_clause,
-                        height=100,
-                        disabled=True,
-                        key=f"grant_{item['file_name']}",
-                    )
-
-                with st.expander("Raw Structured JSON"):
-                    st.json(inst.model_dump())
-
-# --- TAB 3: Cross-Reference Audit ---
-with tab_crossref:
-    st.subheader("Cross-Reference RRC Wells Against Extracted Instruments")
-    if st.session_state.crosswalk_df is None or not st.session_state.extracted_instruments:
-        st.info(
-            "Run **1. RRC Spatial Join** and **2. Lease / Deed Extractor** first to cross-reference wells against extracted tracts."
-        )
-    else:
-        df = st.session_state.crosswalk_df
-        abstract_col = next((c for c in df.columns if "ABSTRACT" in c.upper() or "ABST" in c.upper()), None)
-        api_col = next((c for c in df.columns if "API" in c.upper()), None)
-
-        run_sheet_rows = []
-        for item in st.session_state.extracted_instruments:
-            inst: TexasOilGasInstrument = item["data"]
-            lessees = ", ".join([p.name for p in inst.parties if p.role in ("Lessee", "Grantee", "Assignee")])
-            lessors = ", ".join([p.name for p in inst.parties if p.role in ("Lessor", "Grantor", "Assignor")])
-
-            for ld in inst.legal_descriptions or [LegalDescription()]:
-                matching_wells = 0
-                sample_apis = ""
-                if abstract_col and ld.abstract_number:
-                    matches = df[df[abstract_col].astype(str).str.strip() == str(ld.abstract_number).strip()]
-                    matching_wells = len(matches)
-                    if api_col and not matches.empty:
-                        sample_apis = ", ".join(matches[api_col].astype(str).head(5).tolist())
-
-                flags = []
-                if inst.uncertain_fields:
-                    flags.append(f"OCR Check: {', '.join(inst.uncertain_fields)}")
-                if inst.depth_and_pugh.depth_limitation_text:
-                    flags.append("Depth Severance")
-                if inst.depth_and_pugh.pugh_clause_present:
-                    flags.append("Pugh Clause")
-                if matching_wells == 0:
-                    flags.append("No RRC Wells Matched in Abstract")
-
-                run_sheet_rows.append(
-                    {
-                        "Source File": item["file_name"],
-                        "Instrument": inst.instrument_type,
-                        "Vol/Page or Inst #": inst.volume_page_or_instrument_no,
-                        "Exec Date": inst.execution_date,
-                        "Grantor / Lessor": lessors,
-                        "Grantee / Lessee": lessees,
-                        "County": ld.county,
-                        "Abstract": ld.abstract_number,
-                        "Survey": ld.survey_name,
-                        "Block / Sec": f"{ld.block or '-'} / {ld.section or '-'}",
-                        "Royalty": inst.royalty_and_term.royalty_fraction_text,
-                        "Primary Term": inst.royalty_and_term.primary_term_text,
-                        "Depth Limit": inst.depth_and_pugh.depth_limitation_text,
-                        "Pugh Clause": inst.depth_and_pugh.pugh_clause_present,
-                        "Matching RRC Wells": matching_wells,
-                        "Sample APIs": sample_apis,
-                        "Audit Flags": " | ".join(flags) if flags else "Clean",
-                    }
-                )
-
-        run_sheet_df = pd.DataFrame(run_sheet_rows)
-        st.dataframe(run_sheet_df, use_container_width=True)
-        st.download_button(
-            label="Export Preliminary Run Sheet (CSV)",
-            data=run_sheet_df.to_csv(index=False).encode("utf-8"),
-            file_name="preliminary_landman_run_sheet.csv",
-            mime="text/csv",
-        )
-
-# --- TAB 4: API & TexasFile Lookup Helpers ---
-with tab_lookup:
-    st.subheader("RRC API Lookup & TexasFile Search Generator")
-    col_a, col_b = st.columns(2)
-
-    with col_a:
-        st.markdown("### 1. RRC Well / API Lookup")
-        api_input = st.text_input("Enter Texas API Number (e.g., 42-389-34567 or 38934567)")
-        if api_input:
-            clean_api8 = normalize_rrc_api(api_input)
-            st.success(f"8-Digit RRC GIS Viewer API: **`{clean_api8}`**")
-            st.markdown(
-                f"1. Copy **`{clean_api8}`** above.\n"
-                f"2. Open the [RRC Public GIS Viewer](https://gis.rrc.texas.gov/GISViewer/) and paste into the top-right API search box."
-            )
-
-            if st.session_state.crosswalk_df is not None:
-                df = st.session_state.crosswalk_df
-                api_col = next((c for c in df.columns if "API" in c.upper()), None)
-                if api_col:
-                    hits = df[df[api_col].astype(str).str.contains(clean_api8, na=False)]
-                    if not hits.empty:
-                        st.markdown("**Matching Records in Your Uploaded Crosswalk:**")
-                        st.dataframe(hits, use_container_width=True)
-                    else:
-                        st.info("No matching API found in your currently loaded crosswalk table.")
-
-    with col_b:
-        st.markdown("### 2. TexasFile Search String Builder")
-        party_input = st.text_input("Party / Mineral Owner Name (e.g., Michael Smith or Apache Corporation)")
-        abstract_input = st.text_input("Abstract Number (optional, e.g., 28)")
-
-        if party_input or abstract_input:
-            if party_input:
-                tf_name = format_texasfile_name(party_input)
-                st.code(tf_name, language=None)
-                st.caption("Formatted `LastName FirstName` for TexasFile's Name Search box.")
-            if abstract_input:
-                st.code(abstract_input.strip(), language=None)
-                st.caption("Enter into TexasFile's Reference / Legal Search box at the bottom of the county search page.")
-            st.markdown("Open [TexasFile County Records Search](https://www.texasfile.com/) to run this query.")
+                m
