@@ -1,3 +1,4 @@
+import io
 import os
 import tempfile
 import zipfile
@@ -86,31 +87,86 @@ Extract only what is supported by the provided document pages. Never guess or in
 
 
 # ---------------------------------------------------------------------------
-# 2. Geospatial & Helper Functions
+# 2. Geospatial & Helper Functions (Handles Nested RRC Zips!)
 # ---------------------------------------------------------------------------
-def list_shapefiles_in_zip(file_bytes: bytes) -> list[str]:
-    """Lists all .shp files inside an uploaded zip archive."""
-    import io
+def extract_zip_recursive(zip_bytes: bytes, dest_dir: str):
+    """Unpacks a zip file and any inner .zip files (common in RRC bulk downloads)."""
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        zf.extractall(dest_dir)
+    for root, _, files in os.walk(dest_dir):
+        for fname in files:
+            if fname.lower().endswith(".zip"):
+                nested_path = os.path.join(root, fname)
+                nested_out = os.path.join(root, os.path.splitext(fname)[0])
+                os.makedirs(nested_out, exist_ok=True)
+                try:
+                    with zipfile.ZipFile(nested_path) as nzf:
+                        nzf.extractall(nested_out)
+                except zipfile.BadZipFile:
+                    pass
+
+
+def inspect_uploaded_archive(file_name: str, file_bytes: bytes) -> tuple[list[str], list[str]]:
+    """Returns (shapefile_paths_inside_zip, all_file_extensions) for UI selection."""
+    if not file_name.lower().endswith(".zip"):
+        return [file_name], [os.path.splitext(file_name)[1].lower()]
+
+    shp_names = []
+    exts = set()
     with zipfile.ZipFile(io.BytesIO(file_bytes)) as zf:
-        return [name for name in zf.namelist() if name.lower().endswith(".shp") and not name.startswith("__MACOSX")]
+        for name in zf.namelist():
+            if name.startswith("__MACOSX") or name.endswith("/"):
+                continue
+            ext = os.path.splitext(name)[1].lower()
+            exts.add(ext)
+            if ext == ".shp":
+                shp_names.append(name)
+            elif ext == ".zip":
+                # Peek inside nested zip
+                try:
+                    inner_bytes = zf.read(name)
+                    with zipfile.ZipFile(io.BytesIO(inner_bytes)) as izf:
+                        for iname in izf.namelist():
+                            if not iname.startswith("__MACOSX") and iname.lower().endswith(".shp"):
+                                shp_names.append(f"{name} -> {iname}")
+                except Exception:
+                    pass
+    return sorted(shp_names), sorted(exts)
 
 
-def load_geodata_from_upload(uploaded_file, selected_shp: str | None = None) -> gpd.GeoDataFrame:
-    """Reads an uploaded .zip (supporting multi-shapefile bundles) or .geojson into a GeoDataFrame."""
-    suffix = os.path.splitext(uploaded_file.name)[1].lower()
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(uploaded_file.getvalue())
-        tmp_path = tmp.name
+def load_geodata_from_upload(uploaded_file, selected_layer: str | None = None) -> gpd.GeoDataFrame:
+    """Unpacks upload (including nested zips) into a temp folder and loads the selected shapefile."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        suffix = os.path.splitext(uploaded_file.name)[1].lower()
+        if suffix != ".zip":
+            raw_path = os.path.join(tmpdir, uploaded_file.name)
+            with open(raw_path, "wb") as f:
+                f.write(uploaded_file.getvalue())
+            return gpd.read_file(raw_path)
 
-    try:
-        if suffix == ".zip" and selected_shp:
-            gdf = gpd.read_file(f"zip://{tmp_path}!{selected_shp}")
-        else:
-            gdf = gpd.read_file(tmp_path)
-    finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
-    return gdf
+        extract_zip_recursive(uploaded_file.getvalue(), tmpdir)
+
+        # Find all extracted .shp files
+        all_shps = []
+        for root, _, files in os.walk(tmpdir):
+            for fname in files:
+                if fname.lower().endswith(".shp") and not fname.startswith("._"):
+                    all_shps.append(os.path.join(root, fname))
+
+        if not all_shps:
+            raise ValueError(
+                "No .shp shapefile found inside this zip. Make sure you uploaded an ESRI Shapefile zip (not a PDF or CSV bundle)."
+            )
+
+        chosen_path = all_shps[0]
+        if selected_layer:
+            target_basename = os.path.basename(selected_layer.split("->")[-1].strip())
+            for candidate in all_shps:
+                if os.path.basename(candidate) == target_basename:
+                    chosen_path = candidate
+                    break
+
+        return gpd.read_file(chosen_path)
 
 
 def run_spatial_join(
@@ -209,9 +265,9 @@ with st.sidebar:
     target_crs = st.text_input("Target Planar CRS", value="EPSG:3083")
     st.divider()
     st.subheader("Quick External Portals")
-    st.markdown("- [RRC Public GIS Viewer](https://gis.rrc.texas.gov/)")
+    st.markdown("- [RRC Public GIS Viewer](https://gis.rrc.texas.gov/GISViewer/)")
     st.markdown("- [RRC Bulk Data Downloads](https://www.rrc.texas.gov/resource-center/research/data-sets-available-for-download/)")
-    st.markdown("- [TexasFile County Search](https://www.texasfile.com/search/texas/)")
+    st.markdown("- [TexasFile County Search](https://www.texasfile.com/)")
 
 tab_spatial, tab_extract, tab_crossref, tab_lookup = st.tabs(
     [
@@ -235,43 +291,49 @@ with tab_spatial:
 
     with col1:
         wells_file = st.file_uploader("RRC Wells Layer (.zip or .geojson)", type=["zip", "geojson"])
-        if wells_file and wells_file.name.lower().endswith(".zip"):
-            shp_list = list_shapefiles_in_zip(wells_file.getvalue())
+        if wells_file is not None:
+            shp_list, exts = inspect_uploaded_archive(wells_file.name, wells_file.getvalue())
             if len(shp_list) > 1:
                 wells_selected_shp = st.selectbox(
-                    "Multiple shapefiles found in Wells zip — select layer (e.g., surface 's' or bottomhole 'b'):",
+                    "Select Wells shapefile layer (e.g., surface 's' or bottomhole 'b'):",
                     options=shp_list,
                 )
             elif len(shp_list) == 1:
                 wells_selected_shp = shp_list[0]
-                st.caption(f"Detected layer: `{wells_selected_shp}`")
+                st.success(f"Detected layer: `{wells_selected_shp}`")
+            else:
+                st.error(f"No `.shp` file found inside `{wells_file.name}` (found extensions: {', '.join(exts)}).")
 
     with col2:
         surveys_file = st.file_uploader("Texas GLO / RRC Survey Layer (.zip or .geojson)", type=["zip", "geojson"])
-        if surveys_file and surveys_file.name.lower().endswith(".zip"):
-            shp_list_s = list_shapefiles_in_zip(surveys_file.getvalue())
+        if surveys_file is not None:
+            shp_list_s, exts_s = inspect_uploaded_archive(surveys_file.name, surveys_file.getvalue())
             if len(shp_list_s) > 1:
-                # Prefer polygon layers ('p.shp') by default if present
                 poly_idx = next((i for i, name in enumerate(shp_list_s) if name.lower().endswith("p.shp")), 0)
                 surveys_selected_shp = st.selectbox(
-                    "Multiple shapefiles found in Survey zip — select polygon layer (usually ends in 'p.shp'):",
+                    "Select Survey polygon layer (usually ends in 'p.shp'):",
                     options=shp_list_s,
                     index=poly_idx,
                 )
             elif len(shp_list_s) == 1:
                 surveys_selected_shp = shp_list_s[0]
-                st.caption(f"Detected layer: `{surveys_selected_shp}`")
+                st.success(f"Detected layer: `{surveys_selected_shp}`")
+            else:
+                st.error(f"No `.shp` file found inside `{surveys_file.name}` (found extensions: {', '.join(exts_s)}).")
 
-    if st.button("Run Spatial Join", type="primary", disabled=not (wells_file and surveys_file)):
-        with st.spinner("Reprojecting to common CRS and running spatial intersection..."):
-            try:
-                wells_gdf = load_geodata_from_upload(wells_file, wells_selected_shp)
-                surveys_gdf = load_geodata_from_upload(surveys_file, surveys_selected_shp)
-                crosswalk_df = run_spatial_join(wells_gdf, surveys_gdf, fallback_crs, target_crs)
-                st.session_state.crosswalk_df = crosswalk_df
-                st.success(f"Matched {len(crosswalk_df):,} well-to-survey records.")
-            except Exception as exc:
-                st.error(f"Spatial join failed: {exc}")
+    if st.button("Run Spatial Join", type="primary"):
+        if wells_file is None or surveys_file is None:
+            st.warning("Please upload both a Wells layer and a Survey layer first.")
+        else:
+            with st.spinner("Unpacking layers, aligning CRS, and running spatial intersection..."):
+                try:
+                    wells_gdf = load_geodata_from_upload(wells_file, wells_selected_shp)
+                    surveys_gdf = load_geodata_from_upload(surveys_file, surveys_selected_shp)
+                    crosswalk_df = run_spatial_join(wells_gdf, surveys_gdf, fallback_crs, target_crs)
+                    st.session_state.crosswalk_df = crosswalk_df
+                    st.success(f"Matched {len(crosswalk_df):,} well-to-survey records.")
+                except Exception as exc:
+                    st.error(f"Spatial join failed: {exc}")
 
     if st.session_state.crosswalk_df is not None:
         df = st.session_state.crosswalk_df
@@ -381,7 +443,6 @@ with tab_crossref:
                     if api_col and not matches.empty:
                         sample_apis = ", ".join(matches[api_col].astype(str).head(5).tolist())
 
-                # Build curative/audit flags
                 flags = []
                 if inst.uncertain_fields:
                     flags.append(f"OCR Check: {', '.join(inst.uncertain_fields)}")
@@ -436,10 +497,9 @@ with tab_lookup:
             st.success(f"8-Digit RRC GIS Viewer API: **`{clean_api8}`**")
             st.markdown(
                 f"1. Copy **`{clean_api8}`** above.\n"
-                f"2. Open the [RRC Public GIS Viewer](https://gis.rrc.texas.gov/) and paste into the top-right API search box."
+                f"2. Open the [RRC Public GIS Viewer](https://gis.rrc.texas.gov/GISViewer/) and paste into the top-right API search box."
             )
 
-            # Search loaded crosswalk if available
             if st.session_state.crosswalk_df is not None:
                 df = st.session_state.crosswalk_df
                 api_col = next((c for c in df.columns if "API" in c.upper()), None)
@@ -464,4 +524,4 @@ with tab_lookup:
             if abstract_input:
                 st.code(abstract_input.strip(), language=None)
                 st.caption("Enter into TexasFile's Reference / Legal Search box at the bottom of the county search page.")
-            st.markdown("Open [TexasFile County Records Search](https://www.texasfile.com/search/texas/) to run this query.")
+            st.markdown("Open [TexasFile County Records Search](https://www.texasfile.com/) to run this query.")
