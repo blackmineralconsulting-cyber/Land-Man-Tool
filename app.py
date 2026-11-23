@@ -1,3 +1,4 @@
+import html
 import io
 import os
 import tempfile
@@ -13,7 +14,7 @@ from google.genai import types
 from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------------------------
-# 1. Page Config & High-End Custom Styling
+# 1. Page Config & Obsidian / Copper / Subtle Gold Styling + Hover Tooltips
 # ---------------------------------------------------------------------------
 st.set_page_config(
     page_title="Texas O&G Landman Workbench | Black Mineral Consulting",
@@ -25,82 +26,254 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* Clean header & subtle top gradient accent */
+    /* Base layout & Obsidian Black canvas */
     .block-container {
-        padding-top: 2rem;
+        padding-top: 1.8rem;
         padding-bottom: 3rem;
-        max-width: 1400px;
+        max-width: 1420px;
     }
+    section[data-testid="stSidebar"] {
+        background-color: #0D0D10;
+        border-right: 1px solid rgba(184, 115, 51, 0.25);
+    }
+
+    /* Hero Banner: Obsidian + Burnished Copper + Subtle Gold Edge */
     .hero-banner {
-        background: linear-gradient(135deg, #131C31 0%, #1E293B 60%, #291D0E 100%);
-        border: 1px solid rgba(217, 119, 6, 0.35);
+        background: linear-gradient(135deg, #0E0E11 0%, #171412 55%, #23170F 100%);
+        border: 1px solid rgba(184, 115, 51, 0.45);
         border-radius: 14px;
         padding: 1.5rem 2rem;
         margin-bottom: 1.25rem;
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.65);
+        transition: border-color 0.25s ease, box-shadow 0.25s ease;
+    }
+    .hero-banner:hover {
+        border-color: rgba(229, 193, 88, 0.7);
+        box-shadow: 0 12px 32px rgba(229, 193, 88, 0.08);
+    }
+    .hero-badge {
+        display: inline-block;
+        background: rgba(184, 115, 51, 0.16);
+        color: #E5C158;
+        border: 1px solid rgba(229, 193, 88, 0.45);
+        font-size: 0.72rem;
+        font-weight: 700;
+        padding: 0.22rem 0.7rem;
+        border-radius: 999px;
+        margin-bottom: 0.6rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
     }
     .hero-title {
         font-size: 2rem;
         font-weight: 800;
         letter-spacing: -0.02em;
-        color: #F8FAFC;
+        color: #FAFAFA;
         margin: 0;
     }
     .hero-subtitle {
-        font-size: 0.98rem;
-        color: #CBD5E1;
+        font-size: 0.96rem;
+        color: #A1A1AA;
         margin-top: 0.35rem;
         margin-bottom: 0;
     }
-    .hero-badge {
-        display: inline-block;
-        background: rgba(217, 119, 6, 0.18);
-        color: #FBBF24;
-        border: 1px solid rgba(217, 119, 6, 0.45);
-        font-size: 0.75rem;
-        font-weight: 600;
-        padding: 0.2rem 0.65rem;
-        border-radius: 999px;
-        margin-bottom: 0.6rem;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
+
+    /* Interactive Hover-Tooltip Panels & KPI Cards */
+    .hover-panel {
+        position: relative;
+        background: linear-gradient(180deg, #141417 0%, #0F0F12 100%);
+        border: 1px solid rgba(184, 115, 51, 0.32);
+        border-radius: 11px;
+        padding: 0.95rem 1.15rem;
+        transition: all 0.22s ease;
+        cursor: help;
     }
-    /* Styled Tabs */
+    .hover-panel:hover {
+        border-color: #E5C158;
+        box-shadow: 0 0 18px rgba(229, 193, 88, 0.16);
+        transform: translateY(-2px);
+    }
+    .hover-panel::after {
+        content: attr(data-tooltip);
+        position: absolute;
+        left: 50%;
+        bottom: calc(100% + 10px);
+        transform: translateX(-50%) translateY(4px);
+        width: max-content;
+        max-width: 280px;
+        background: #181614;
+        color: #F4F4F5;
+        border: 1px solid #E5C158;
+        border-radius: 8px;
+        padding: 0.55rem 0.8rem;
+        font-size: 0.78rem;
+        font-weight: 400;
+        line-height: 1.38;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.85);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.2s ease, transform 0.2s ease;
+        z-index: 9999;
+    }
+    .hover-panel:hover::after {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0);
+    }
+    .kpi-label {
+        font-size: 0.78rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #A1A1AA;
+        margin-bottom: 0.25rem;
+    }
+    .kpi-value {
+        font-size: 1.65rem;
+        font-weight: 700;
+        color: #FAFAFA;
+        line-height: 1.2;
+    }
+    .kpi-accent {
+        color: #E5C158;
+        font-size: 0.75rem;
+        margin-top: 0.2rem;
+    }
+
+    /* Section Header Bar with Hover Explanation */
+    .section-guide {
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        background: #141417;
+        border-left: 3px solid #B87333;
+        border-top: 1px solid rgba(184, 115, 51, 0.25);
+        border-right: 1px solid rgba(184, 115, 51, 0.25);
+        border-bottom: 1px solid rgba(184, 115, 51, 0.25);
+        border-radius: 8px;
+        padding: 0.7rem 1rem;
+        margin-bottom: 0.9rem;
+        transition: border-color 0.2s ease, box-shadow 0.2s ease;
+        cursor: help;
+    }
+    .section-guide:hover {
+        border-color: #E5C158;
+        box-shadow: 0 0 16px rgba(229, 193, 88, 0.14);
+    }
+    .section-guide-title {
+        font-weight: 700;
+        font-size: 1.02rem;
+        color: #FAFAFA;
+    }
+    .section-guide-hint {
+        font-size: 0.78rem;
+        color: #E5C158;
+        font-weight: 500;
+    }
+    .section-guide::after {
+        content: attr(data-tooltip);
+        position: absolute;
+        right: 1rem;
+        top: calc(100% + 8px);
+        max-width: 420px;
+        background: #181614;
+        color: #F4F4F5;
+        border: 1px solid #E5C158;
+        border-radius: 8px;
+        padding: 0.65rem 0.9rem;
+        font-size: 0.82rem;
+        line-height: 1.42;
+        box-shadow: 0 10px 26px rgba(0, 0, 0, 0.88);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.2s ease;
+        z-index: 9999;
+    }
+    .section-guide:hover::after {
+        opacity: 1;
+    }
+
+    /* Streamlit Bordered Containers -> Copper & Subtle Gold Hover */
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        background-color: #121215;
+        border: 1px solid rgba(184, 115, 51, 0.3) !important;
+        border-radius: 12px !important;
+        transition: border-color 0.22s ease, box-shadow 0.22s ease;
+    }
+    div[data-testid="stVerticalBlockBorderWrapper"]:hover {
+        border-color: rgba(229, 193, 88, 0.65) !important;
+        box-shadow: 0 0 20px rgba(229, 193, 88, 0.1);
+    }
+
+    /* Navigation Tabs: Obsidian & Copper Active State + Gold Hover */
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px;
-        background-color: #131C31;
+        background-color: #121215;
         padding: 6px;
         border-radius: 10px;
-        border: 1px solid #1E293B;
+        border: 1px solid rgba(184, 115, 51, 0.3);
     }
     .stTabs [data-baseweb="tab"] {
         border-radius: 8px;
         padding: 8px 16px;
         font-weight: 600;
-        color: #94A3B8;
+        color: #A1A1AA;
+        transition: all 0.2s ease;
+    }
+    .stTabs [data-baseweb="tab"]:hover {
+        color: #E5C158;
+        background-color: rgba(229, 193, 88, 0.08);
     }
     .stTabs [aria-selected="true"] {
-        background-color: #D97706 !important;
+        background: linear-gradient(135deg, #B87333 0%, #9A5B22 100%) !important;
         color: #FFFFFF !important;
+        border: 1px solid rgba(229, 193, 88, 0.5) !important;
     }
-    /* Metric cards */
-    div[data-testid="stMetric"] {
-        background-color: #131C31;
-        border: 1px solid #1E293B;
-        padding: 0.9rem 1.1rem;
-        border-radius: 10px;
-    }
-    /* Primary Buttons */
+
+    /* Primary Copper Buttons with Subtle Gold Hover Glow */
     .stButton > button[kind="primary"] {
+        background: linear-gradient(135deg, #B87333 0%, #9A5B22 100%);
+        border: 1px solid rgba(229, 193, 88, 0.45);
+        color: #FFFFFF;
         border-radius: 8px;
         font-weight: 600;
-        letter-spacing: 0.01em;
-        box-shadow: 0 4px 12px rgba(217, 119, 6, 0.25);
+        transition: all 0.2s ease;
+    }
+    .stButton > button[kind="primary"]:hover {
+        border-color: #E5C158;
+        box-shadow: 0 0 16px rgba(229, 193, 88, 0.32);
     }
     </style>
     """,
     unsafe_allow_html=True,
 )
+
+
+def render_hover_kpi(label: str, value: str, subtext: str, tooltip: str):
+    safe_tip = html.escape(tooltip, quote=True)
+    st.markdown(
+        f"""
+        <div class="hover-panel" data-tooltip="{safe_tip}">
+            <div class="kpi-label">{html.escape(label)}</div>
+            <div class="kpi-value">{html.escape(value)}</div>
+            <div class="kpi-accent">{html.escape(subtext)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_section_header(title: str, tooltip: str):
+    safe_tip = html.escape(tooltip, quote=True)
+    st.markdown(
+        f"""
+        <div class="section-guide" data-tooltip="{safe_tip}">
+            <span class="section-guide-title">{html.escape(title)}</span>
+            <span class="section-guide-hint">ⓘ Hover for panel guide</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 
 # ---------------------------------------------------------------------------
 # 2. Pydantic Schema for Texas Oil & Gas Instruments
@@ -391,12 +564,12 @@ with st.sidebar:
     st.markdown("- [Texas GLO Land Grant Search](https://s3.glo.texas.gov/ncu/SCANDOCS/archives_webfiles/arcmaps/webfiles/landgrants/LandGrantsWorklist.html)")
 
 # ---------------------------------------------------------------------------
-# 6. Hero Header & Live Status Strip
+# 6. Hero Header & Live Hover-Tooltip KPI Strip
 # ---------------------------------------------------------------------------
 st.markdown(
     """
     <div class="hero-banner">
-        <div class="hero-badge">Texas Mineral &amp; Title Intelligence Suite</div>
+        <div class="hero-badge">Black Mineral Consulting • Title &amp; GIS Suite</div>
         <h1 class="hero-title">Texas Oil &amp; Gas Landman Workbench</h1>
         <p class="hero-subtitle">Spatial Well-to-Survey Crosswalks • AI Deed &amp; Lease Extraction • Custom Run Sheets • Division of Interest Math</p>
     </div>
@@ -404,14 +577,38 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Live Progress KPI Strip
 kpi1, kpi2, kpi3, kpi4 = st.columns(4)
 well_count = len(st.session_state.crosswalk_df) if st.session_state.crosswalk_df is not None else 0
 inst_count = len(st.session_state.extracted_instruments)
-kpi1.metric("Crosswalk Well Records", f"{well_count:,}")
-kpi2.metric("County Layers Joined", str(st.session_state.layers_joined_count))
-kpi3.metric("Instruments Parsed", str(inst_count))
-kpi4.metric("AI Vision Status", "Connected" if api_key else "Standby")
+
+with kpi1:
+    render_hover_kpi(
+        label="Crosswalk Records",
+        value=f"{well_count:,}",
+        subtext="RRC Wells Mapped",
+        tooltip="Total well-to-survey intersections generated in Tab 1. Used to link API numbers to Texas Abstracts and Surveys.",
+    )
+with kpi2:
+    render_hover_kpi(
+        label="Layers Joined",
+        value=str(st.session_state.layers_joined_count),
+        subtext="County Shapefiles",
+        tooltip="Number of county well or survey shapefile layers merged in your current spatial crosswalk session.",
+    )
+with kpi3:
+    render_hover_kpi(
+        label="Parsed Docs",
+        value=str(inst_count),
+        subtext="Deeds & Leases",
+        tooltip="Count of recorded county clerk PDFs or page scans extracted by AI in Tab 2 and ready for run-sheet export.",
+    )
+with kpi4:
+    render_hover_kpi(
+        label="AI Engine",
+        value="Connected" if api_key else "Standby",
+        subtext="Gemini Vision OCR",
+        tooltip="Shows whether your Gemini API key is active in the sidebar to read scanned deeds, leases, and cursive handwriting.",
+    )
 
 st.write("")
 
@@ -431,7 +628,10 @@ tab_spatial, tab_extract, tab_crossref, tab_lookup, tab_math = st.tabs(
 # --- TAB 1: Multi-County Spatial-to-Survey Join ---
 with tab_spatial:
     with st.container(border=True):
-        st.markdown("#### Step 1: Upload RRC Well & Texas Survey Shapefiles")
+        render_section_header(
+            title="Step 1: Upload RRC Well & Texas Survey Shapefiles",
+            tooltip="Spatial Crosswalk Panel: Intersects Texas Railroad Commission well coordinates (NAD27/NAD83) against Texas GLO/RRC Survey polygons to map every API number to its Abstract, Survey, Block, and Section.",
+        )
         st.caption("Keep RRC downloads as `.zip` archives — the workbench automatically unpacks nested county folders.")
 
         col1, col2 = st.columns(2, gap="large")
@@ -524,7 +724,10 @@ with tab_spatial:
     if st.session_state.crosswalk_df is not None:
         df = st.session_state.crosswalk_df
         with st.container(border=True):
-            st.markdown("#### Crosswalk Results & Quick Search")
+            render_section_header(
+                title="Crosswalk Results & Instant Search",
+                tooltip="Crosswalk Results Panel: Filter your joined well-to-survey table by API number, Abstract, or Survey name and export the full dataset to CSV.",
+            )
             search_col, dl_col = st.columns([2, 1])
             with search_col:
                 quick_filter = st.text_input(
@@ -555,8 +758,11 @@ with tab_spatial:
 # --- TAB 2: Vision-LLM Lease & Deed Extraction ---
 with tab_extract:
     with st.container(border=True):
-        st.markdown("#### Batch Parse Recorded County Clerk PDFs & Page Scans")
-        st.caption("Extracts Grantor/Grantee, Recording Info, Legal Descriptions, Royalties, and verbatim Pugh/Depth clauses.")
+        render_section_header(
+            title="Batch Parse Recorded County Clerk PDFs & Page Scans",
+            tooltip="AI Document Extractor Panel: Uses multimodal Vision AI to read scanned Oil & Gas Leases, Memorandums, Assignments, and Deeds—extracting parties, recording info, legal descriptions, royalty fractions, and verbatim Pugh/depth clauses.",
+        )
+        st.caption("Upload one or multiple PDFs/scans. Uncertain handwriting is automatically flagged for curative review.")
 
         uploaded_docs = st.file_uploader(
             "Drag and drop Oil & Gas Leases, Memorandums, Assignments, or Mineral Deeds",
@@ -640,6 +846,10 @@ with tab_extract:
 with tab_crossref:
     if not st.session_state.extracted_instruments:
         with st.container(border=True):
+            render_section_header(
+                title="Client Run-Sheet Builder & Well Cross-Reference",
+                tooltip="Run Sheet & Audit Panel: Combines your AI-extracted instruments from Tab 2 with your RRC well crosswalk from Tab 1, flags depth severances or Pugh clauses, and exports a customizable CSV run sheet.",
+            )
             st.info(
                 "Parse at least one instrument in **Tab 2 (AI Deed & Lease Extractor)** to build your run sheet. "
                 "If you also ran **Tab 1 (Spatial Crosswalk)**, matching RRC well counts and APIs will attach automatically."
@@ -706,7 +916,10 @@ with tab_crossref:
         run_sheet_df = pd.DataFrame(run_sheet_rows)
 
         with st.container(border=True):
-            st.markdown("#### Client Run-Sheet Template & Export")
+            render_section_header(
+                title="Client Run-Sheet Template & Export",
+                tooltip="Customize which columns appear and in what order before exporting your preliminary title run sheet to CSV.",
+            )
             c_left, c_right = st.columns([1, 2])
             with c_left:
                 client_project = st.text_input("Prospect / Client Name", value="Texas_Prospect")
@@ -736,8 +949,10 @@ with tab_lookup:
 
     with col_a:
         with st.container(border=True):
-            st.markdown("#### 🛢️ RRC Well & API Formatter")
-            st.caption("Converts 10- or 14-digit Texas API numbers into the 8-digit code used by the RRC GIS Viewer.")
+            render_section_header(
+                title="🛢️ RRC Well & API Formatter",
+                tooltip="API Lookup Panel: Converts 10- or 14-digit Texas API numbers into the 8-digit format required by the RRC Public GIS Viewer and searches your loaded spatial crosswalk.",
+            )
             api_input = st.text_input("Texas API Number", placeholder="e.g. 42-001-32761 or 00132761")
             if api_input:
                 clean_api8 = normalize_rrc_api(api_input)
@@ -757,8 +972,10 @@ with tab_lookup:
 
     with col_b:
         with st.container(border=True):
-            st.markdown("#### 🏛️ TexasFile Search String Builder")
-            st.caption("Formats individual names into `LastName FirstName` convention for county grantor/grantee indexes.")
+            render_section_header(
+                title="🏛️ TexasFile Search String Builder",
+                tooltip="TexasFile Helper Panel: Converts individual mineral owner names into 'LastName FirstName' format (while preserving LLCs/Trusts) and formats Abstract numbers for county clerk searches.",
+            )
             party_input = st.text_input("Mineral Owner / Entity Name", placeholder="e.g. Michael Smith or Apache Corporation")
             abstract_input = st.text_input("Abstract Number (Optional)", placeholder="e.g. 28")
 
@@ -775,7 +992,10 @@ with tab_lookup:
 # --- TAB 5: NMA / NRI Ownership Calculator ---
 with tab_math:
     with st.container(border=True):
-        st.markdown("#### Tract & Unit Acreage Parameters")
+        render_section_header(
+            title="Tract & Unit Acreage Parameters",
+            tooltip="NMA / NRI Calculator Panel: Calculates exact fractional and decimal Net Mineral Acres (NMA), Royalty Owner Unit NRI, and Lessee Working/Net Revenue Interest for leased and unleased mineral owners.",
+        )
         c1, c2 = st.columns(2)
         with c1:
             gross_tract_acres = st.number_input("Gross Tract Acres", min_value=0.0, value=640.0, step=10.0)
@@ -846,7 +1066,10 @@ with tab_math:
 
     if doi_rows:
         with st.container(border=True):
-            st.markdown("#### Division of Interest (DOI) Summary")
+            render_section_header(
+                title="Division of Interest (DOI) Summary",
+                tooltip="Division of Interest Panel: Summarizes total accounted mineral ownership, NMA, Royalty NRI, and Lessee NRI with one-click CSV export.",
+            )
             doi_df = pd.DataFrame(doi_rows)
             m_a, m_b, m_c, m_d = st.columns(4)
             m_a.metric("Mineral Interest Accounted", f"{total_mi * 100:.4f}%")
